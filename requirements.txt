@@ -1,0 +1,9 @@
+open-clip-torch
+torch
+torchvision
+pillow
+numpy
+jupyter
+ipykernel
+matplotlib
+pandas

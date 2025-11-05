@@ -1,0 +1,51 @@
+
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual envs
+.venv/
+venv/
+*.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large artifacts and outputs
+output/**
+logs/**
+temp/**
+tmp/**
+
+# Datasets (keep repo small)
+data/**
+!data/.keep
+
+# Images anywhere (avoid committing photos/samples)
+**/*.jpg
+**/*.jpeg
+**/*.png
+**/*.bmp
+**/*.gif
+**/*.webp
+**/*.tiff
+
+# Model/data archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# Misc
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+
