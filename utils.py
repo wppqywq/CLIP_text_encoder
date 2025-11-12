@@ -121,6 +121,10 @@ def load_flickr30k_karpathy_json(
     return dataset
 
 
+def _normalize_features(x: torch.Tensor) -> torch.Tensor:
+    return x / (x.norm(dim=-1, keepdim=True) + 1e-12)
+
+
 def chunk_caption_words(caption: str, chunk_words: int, stride_words: Optional[int] = None) -> List[str]:
     """
     Split a caption into word chunks of size chunk_words. Non-overlapping by default.
@@ -157,14 +161,12 @@ def pool_chunk_embeddings(
     elif mode == "attn":
         with torch.no_grad():
             q = chunk_embeds.mean(dim=0, keepdim=True)  # (1, d)
-            q_norm = q / (q.norm(dim=-1, keepdim=True) + 1e-12)
-            logits = (chunk_embeds @ q_norm.T).squeeze(-1)  # (n)
+            logits = (chunk_embeds @ _normalize_features(q).T).squeeze(-1)  # (n)
             weights = torch.softmax(logits, dim=0)  # (n)
         pooled = (weights[:, None] * chunk_embeds).sum(dim=0)
     else:  # mean
         pooled = chunk_embeds.mean(dim=0)
-    pooled_norm = pooled / (pooled.norm(dim=-1, keepdim=True) + 1e-12)
-    return pooled_norm
+    return _normalize_features(pooled)
 
 
 def encode_openclip_embeddings(
@@ -179,7 +181,7 @@ def encode_openclip_embeddings(
     text_pooling: str = "mean",
     progress: bool = False,
     progress_desc: str = "",
-    chunk_threshold_tokens: int = 32,
+    chunk_threshold_tokens: Optional[int] = None,
 ) -> Dict[str, object]:
     # Prepare image paths and captions
     image_paths: List[str] = [str(item["image_path"]) for item in dataset]
@@ -221,29 +223,20 @@ def encode_openclip_embeddings(
         with torch.no_grad():
             feats = model.encode_image(image_tensor)
             feats = feats.float()
-            feats = feats / (feats.norm(dim=-1, keepdim=True) + 1e-12)
+            feats = _normalize_features(feats)
         image_features.append(feats.cpu())
     image_embeds = torch.cat(image_features, dim=0).numpy()
 
-    # Encode captions (chunk only if caption token count > threshold)
-    if text_chunk_words and text_chunk_words > 0:
-        sample = captions_flat if len(captions_flat) <= 256 else random.sample(captions_flat, 256)
-        tokens = tokenizer(sample)
-        if isinstance(tokens, dict):
-            token_tensor = tokens["input_ids"]
-        else:
-            token_tensor = tokens
-        token_lengths = token_tensor.ne(0).sum(dim=1)
-        should_chunk = bool((token_lengths > chunk_threshold_tokens).any().item())
-        if not should_chunk:
-            text_chunk_words = None
-
+    # Encode captions (optionally chunked and pooled)
     if text_chunk_words and text_chunk_words > 0:
         # Build chunk lists per caption
         all_chunks: List[str] = []
         caption_chunk_slices: List[Tuple[int, int]] = []
         for cap in captions_flat:
-            chunks = chunk_caption_words(cap, text_chunk_words, text_chunk_stride)
+            if chunk_threshold_tokens is not None and len(cap.split()) < chunk_threshold_tokens:
+                chunks = [cap]
+            else:
+                chunks = chunk_caption_words(cap, text_chunk_words, text_chunk_stride)
             if len(chunks) == 0:
                 chunks = [cap]
             start = len(all_chunks)
@@ -268,7 +261,7 @@ def encode_openclip_embeddings(
             with torch.no_grad():
                 feats = model.encode_text(tokens)
                 feats = feats.float()
-                feats = feats / (feats.norm(dim=-1, keepdim=True) + 1e-12)
+                feats = _normalize_features(feats)
             chunk_features.append(feats.cpu())
         chunk_matrix = torch.cat(chunk_features, dim=0)  # (total_chunks, d)
 
@@ -295,7 +288,7 @@ def encode_openclip_embeddings(
             with torch.no_grad():
                 feats = model.encode_text(tokens)
                 feats = feats.float()
-                feats = feats / (feats.norm(dim=-1, keepdim=True) + 1e-12)
+                feats = _normalize_features(feats)
             text_features.append(feats.cpu())
         caption_embeds = torch.cat(text_features, dim=0).numpy()
 

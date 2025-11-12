@@ -12,22 +12,26 @@ DEVICE_PREFERENCE = "mps"  # change to "cuda" or "cpu" if needed
 SEED = 42
 
 RUN_SPLITS = ["train", "test"]  # adjust to limit splits
-LIMIT_IMAGES = 1000  # lower for quick smoke tests
+LIMIT_IMAGES = 10000  # lower for quick smoke tests
 BATCH_SIZE = 32
 K_VALUES = (1, 5, 10)
 
 TEXT_CHUNK_WORDS = 8  # set 0 to disable chunking
 TEXT_CHUNK_STRIDE = 4
-TEXT_POOLING = "mean"  # mean / max / attn
-TEXT_CHUNK_THRESHOLD = 32  # captions shorter than this keep original form unless entities are used
+TEXT_POOLING = "attn"  # mean / max / attn
+TEXT_CHUNK_THRESHOLD = 12  # captions shorter than this keep original form unless entities are used
 
-ADAPTER_STEPS = 100
+ADAPTER_STEPS = 300
 ADAPTER_LR = 1e-5
 ADAPTER_LOGIT_LR = 5e-7
 ADAPTER_BATCH = 32
 ADAPTER_HIDDEN = 64
-DISTILL_WEIGHTS = [0.0, 0.2, 0.5, 1.0]
+DISTILL_WEIGHTS = [0.25]
 ENTITY_PHRASE_MIN_WORDS = 2
+FINE_GRAINED_WEIGHT = 0.5
+
+CACHE_CHUNK_IMAGE_EMBEDS = True
+TEACHER_CAPTION_CACHE_ON_CPU = True
 
 ENTITIES_ROOT = "data/flickr30k/flickr30k_entities-master"
 IMAGES_ROOT = "data/flickr30k/flickr30k-images"
@@ -205,24 +209,27 @@ def encode_chunked_embeddings(
     entity_cache: Dict[str, List[Dict[str, object]]],
     *,
     progress_desc: str,
+    image_embed_cache: Optional[np.ndarray] = None,
 ) -> Dict[str, object]:
     if progress_desc:
         print(f"encoding {progress_desc}...")
     dataset = datasets[split]
-    image_paths = [str(item["image_path"]) for item in dataset]
-
-    image_embeddings: List[torch.Tensor] = []
-    for start in range(0, len(image_paths), BATCH_SIZE):
-        batch_paths = image_paths[start:start + BATCH_SIZE]
-        images: List[torch.Tensor] = []
-        for path in batch_paths:
-            with Image.open(path).convert("RGB") as img:
-                images.append(image_transform(img))
-        image_tensor = torch.stack(images, dim=0).to(device)
-        with torch.no_grad():
-            feats = model.encode_image(image_tensor).float()  # type: ignore[attr-defined]
-        image_embeddings.append(normalize_features(feats).cpu())
-    image_embed_tensor = torch.cat(image_embeddings, dim=0)
+    if image_embed_cache is not None:
+        image_embed_array = np.asarray(image_embed_cache, dtype=np.float32)
+    else:
+        image_paths = [str(item["image_path"]) for item in dataset]
+        image_embeddings: List[torch.Tensor] = []
+        for start in range(0, len(image_paths), BATCH_SIZE):
+            batch_paths = image_paths[start:start + BATCH_SIZE]
+            images: List[torch.Tensor] = []
+            for path in batch_paths:
+                with Image.open(path).convert("RGB") as img:
+                    images.append(image_transform(img))
+            image_tensor = torch.stack(images, dim=0).to(device)
+            with torch.no_grad():
+                feats = model.encode_image(image_tensor).float()  # type: ignore[attr-defined]
+            image_embeddings.append(normalize_features(feats).cpu())
+        image_embed_array = torch.cat(image_embeddings, dim=0).cpu().numpy()
 
     caption_info: List[Tuple[int, int, int]] = []  # (image_idx, start, end)
     segment_texts: List[str] = []
@@ -270,7 +277,7 @@ def encode_chunked_embeddings(
         raise RuntimeError("Caption pointer did not consume all segment info")
 
     return {
-        "image_embeddings": image_embed_tensor.numpy(),
+        "image_embeddings": image_embed_array,
         "caption_embeddings": np.asarray(caption_embeddings, dtype=np.float32),
         "caption_to_image_index": np.asarray(caption_to_image_index, dtype=np.int64),
         "image_to_caption_indices": image_to_caption_indices,
@@ -285,6 +292,8 @@ if TEXT_CHUNK_WORDS > 0:
 else:
     for split in datasets:
         entity_caches[split] = {}
+
+chunk_image_cache: Dict[str, np.ndarray] = {}
 
 
 # %%
@@ -358,9 +367,12 @@ if TEXT_CHUNK_WORDS > 0:
             split,
             entity_caches[split],
             progress_desc=f"{split}|chunk-baseline",
+            image_embed_cache=None,
         )
         metrics_chunk = compute_recalls(emb_chunk)
         chunk_baseline_embeddings[split] = emb_chunk
+        if CACHE_CHUNK_IMAGE_EMBEDS:
+            chunk_image_cache[split] = np.asarray(emb_chunk["image_embeddings"], dtype=np.float32)
         chunk_baseline_metrics[split] = metrics_chunk
         print(f"baseline chunk {split}:")
         for tag in ("t2i", "i2t"):
@@ -420,13 +432,12 @@ teacher_caps_full: Optional[torch.Tensor] = None
 teacher_img2cap_full: Optional[List[List[int]]] = None
 if any(w > 0 for w in DISTILL_WEIGHTS):
     teacher_source = chunk_baseline_embeddings if TEXT_CHUNK_WORDS > 0 else baseline_original_embeddings
-    teacher_caps_full = normalize_features(
-        torch.tensor(
-            teacher_source["train"]["caption_embeddings"],
-            dtype=torch.float32,
-        device=device,
-        )
+    caps_tensor = torch.tensor(
+        teacher_source["train"]["caption_embeddings"],
+        dtype=torch.float32,
     )
+    caps_tensor = normalize_features(caps_tensor)
+    teacher_caps_full = caps_tensor.cpu() if TEACHER_CAPTION_CACHE_ON_CPU else caps_tensor.to(device)
     teacher_img2cap_full = cast(
         List[List[int]],
         teacher_source["train"]["image_to_caption_indices"],
@@ -470,6 +481,7 @@ for distill_weight in DISTILL_WEIGHTS:
         images: List[torch.Tensor] = []
         caption_segments: List[str] = []
         caption_spans: List[Tuple[int, int]] = []
+        segment_image_indices: List[int] = []
         teacher_pick: List[int] = []
         for idx in batch_idx:
             entry = datasets["train"][idx]
@@ -486,6 +498,7 @@ for distill_weight in DISTILL_WEIGHTS:
             start = len(caption_segments)
             caption_segments.extend(segments)
             caption_spans.append((start, len(caption_segments)))
+            segment_image_indices.extend([len(images) - 1] * len(segments))
 
             if teacher_img2cap is not None:
                 teacher_pick.append(teacher_img2cap[idx][cap_pos])
@@ -510,9 +523,16 @@ for distill_weight in DISTILL_WEIGHTS:
         targets = torch.arange(logits.size(0), device=device)
         loss = (F.cross_entropy(logits, targets) + F.cross_entropy(logits.t(), targets)) * 0.5
 
+        if FINE_GRAINED_WEIGHT > 0 and segment_image_indices:
+            seg_targets = torch.tensor(segment_image_indices, dtype=torch.long, device=device)
+            fine_logits = (segment_embeds @ image_features.t()) * logit_scale.exp()
+            fine_loss = F.cross_entropy(fine_logits, seg_targets)
+            loss = loss + FINE_GRAINED_WEIGHT * fine_loss
+
         if teacher_caps is not None and teacher_pick:
-            idx_tensor = torch.tensor(teacher_pick, dtype=torch.long, device=device)
-            teacher_batch = teacher_caps[idx_tensor]
+            teacher_device = teacher_caps.device
+            idx_tensor = torch.tensor(teacher_pick, dtype=torch.long, device=teacher_device)
+            teacher_batch = teacher_caps[idx_tensor].to(device)
             loss = loss + distill_weight * F.mse_loss(text_features, teacher_batch)
 
         optimizer.zero_grad()
@@ -543,11 +563,15 @@ for distill_weight in DISTILL_WEIGHTS:
     adapter_metrics: Dict[str, Dict[str, Dict[int, float]]] = {}
     for split in RUN_SPLITS:
         if TEXT_CHUNK_WORDS > 0:
+            image_cache = chunk_image_cache.get(split) if CACHE_CHUNK_IMAGE_EMBEDS else None
             emb = encode_chunked_embeddings(
                 split,
                 entity_caches[split],
                 progress_desc=f"{split}|adapter_{distill_weight}",
+                image_embed_cache=image_cache,
             )
+            if CACHE_CHUNK_IMAGE_EMBEDS and image_cache is None:
+                chunk_image_cache[split] = np.asarray(emb["image_embeddings"], dtype=np.float32)
         else:
             emb = run_clip_encoding(
                 split,
