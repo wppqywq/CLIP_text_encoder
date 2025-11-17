@@ -151,8 +151,11 @@ def _candidate_image_paths(image_id: int, images_root: Path) -> List[Path]:
 
 def _resolve_image_path(image_id: int, images_root: Path) -> Optional[Path]:
     for candidate in _candidate_image_paths(image_id, images_root):
-        if candidate.is_file():
-            return candidate
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
     return None
 
 

@@ -66,6 +66,7 @@ DEFAULT_FINE_GRAINED_WEIGHT = 0.5
 DEFAULT_CACHE_CHUNK_IMAGE_EMBEDS = True
 DEFAULT_TEACHER_CACHE_ON_CPU = True
 DEFAULT_OUTPUT_NAME = "visual_genome_adapter"
+DEFAULT_SHOW_PROGRESS = False
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,7 @@ class AdapterExperimentConfig:
     teacher_cache_on_cpu: bool = DEFAULT_TEACHER_CACHE_ON_CPU
     output_name: str = DEFAULT_OUTPUT_NAME
     process_config: VisualGenomeProcessConfig = field(default_factory=VisualGenomeProcessConfig)
+    show_progress: bool = DEFAULT_SHOW_PROGRESS
 
     def to_dict(self) -> Dict[str, object]:
         payload = asdict(self)
@@ -293,6 +295,8 @@ def _train_adapter(
     adapter_hidden: int,
     adapter_lr: float,
     adapter_logit_lr: float,
+    progress: bool = False,
+    progress_desc: str = "",
 ) -> List[Tuple[int, float, float]]:
     adapter = attach_text_adapters(model, hidden_dim=adapter_hidden)
     model.to(device)
@@ -317,7 +321,19 @@ def _train_adapter(
     indices = list(range(len(dataset)))
     loss_log: List[Tuple[int, float, float]] = []
 
-    for step in range(steps):
+    iterator = range(steps)
+    progress_bar = None
+    if progress:
+        try:
+            from tqdm.auto import tqdm  # type: ignore
+
+            iterator = tqdm(range(steps), desc=progress_desc or "adapter-train")  # type: ignore[assignment]
+            progress_bar = iterator  # type: ignore[assignment]
+        except Exception:
+            iterator = range(steps)
+            progress_bar = None
+
+    for step in iterator:
         batch_idx = random.sample(indices, k=min(batch_size, len(indices)))
         images: List[torch.Tensor] = []
         captions: List[str] = []
@@ -390,6 +406,20 @@ def _train_adapter(
 
         if step % 10 == 0 or step == steps - 1:
             loss_log.append((step, float(loss.item()), float(logit_scale.exp().item())))
+        if progress_bar is not None:
+            try:
+                progress_bar.set_postfix(
+                    loss=float(loss.item()),
+                    scale=float(logit_scale.exp().item()),
+                )
+            except Exception:
+                pass
+
+    if progress_bar is not None:
+        try:
+            progress_bar.close()
+        except Exception:
+            pass
 
     detach_text_adapters(model)
     logit_scale.requires_grad_(False)
@@ -505,6 +535,8 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
             adapter_hidden=config.adapter_hidden,
             adapter_lr=config.adapter_lr,
             adapter_logit_lr=config.adapter_logit_lr,
+            progress=config.show_progress,
+            progress_desc=f"distill={weight:.2f}",
         )
         loss_logs[weight] = loss_log
 
