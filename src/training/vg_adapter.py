@@ -23,7 +23,12 @@ from PIL import Image
 
 import open_clip  # type: ignore
 
-from adapter import attach_text_adapters, detach_text_adapters, normalize_features
+from adapter import (
+    TransformerAdapter,
+    attach_text_adapters,
+    detach_text_adapters,
+    normalize_features,
+)
 from src.config.runtime import RuntimePaths
 from src.data.visual_genome import PROCESSED_JSON_NAME, VisualGenomeProcessConfig
 from utils import (
@@ -297,7 +302,7 @@ def _train_adapter(
     adapter_logit_lr: float,
     progress: bool = False,
     progress_desc: str = "",
-) -> List[Tuple[int, float, float]]:
+) -> Tuple[List[Tuple[int, float, float]], TransformerAdapter]:
     adapter = attach_text_adapters(model, hidden_dim=adapter_hidden)
     model.to(device)
     model.eval()
@@ -421,9 +426,8 @@ def _train_adapter(
         except Exception:
             pass
 
-    detach_text_adapters(model)
     logit_scale.requires_grad_(False)
-    return loss_log
+    return loss_log, adapter
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +520,7 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
     for weight in config.distill_weights:
         if weight < 0:
             raise ValueError("Distillation weight must be non-negative.")
-        loss_log = _train_adapter(
+        loss_log, _adapter_module = _train_adapter(
             model,
             tokenizer,
             preprocess,
@@ -577,6 +581,7 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
             metrics = _compute_recalls(emb, config.k_values)
             current_metrics[split] = metrics
         adapter_results[weight] = current_metrics
+        detach_text_adapters(model)
 
     summary_rows: List[Dict[str, object]] = []
     for split in config.run_splits:
