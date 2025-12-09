@@ -73,6 +73,8 @@ DEFAULT_TEACHER_CACHE_ON_CPU = True
 DEFAULT_OUTPUT_NAME = "visual_genome_adapter"
 DEFAULT_SHOW_PROGRESS = False
 
+VALID_CHUNK_MODES: Tuple[str, ...] = ("fixed", "entity")
+
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -92,6 +94,7 @@ class AdapterExperimentConfig:
     chunk_words: int = DEFAULT_CHUNK_WORDS
     chunk_stride: int = DEFAULT_CHUNK_STRIDE
     chunk_threshold: int = DEFAULT_CHUNK_THRESHOLD
+    chunk_mode: str = "fixed"
     text_pooling: str = DEFAULT_TEXT_POOLING
     adapter_steps: int = DEFAULT_ADAPTER_STEPS
     adapter_lr: float = DEFAULT_ADAPTER_LR
@@ -157,12 +160,72 @@ def _load_visual_genome_dataset(
     return datasets
 
 
+def _normalise_entity_chunk_list(items: Sequence[object]) -> List[str]:
+    ordered_phrases: List[Tuple[int, str]] = []
+    fallback = 0
+    for index, item in enumerate(items):
+        text = ""
+        order_key: Optional[int] = None
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            raw = item.get("text", item.get("phrase", item.get("label", "")))
+            text = str(raw)
+            candidate_order = item.get("start", item.get("index"))
+            if isinstance(candidate_order, (int, float)):
+                order_key = int(candidate_order)
+        elif isinstance(item, Sequence) and item:
+            text = str(item[0])
+        else:
+            continue
+        text = " ".join(text.split()).strip()
+        if not text:
+            continue
+        if order_key is None:
+            order_key = fallback
+        ordered_phrases.append((order_key, text))
+        fallback = max(fallback + 1, order_key + 1)
+    ordered_phrases.sort(key=lambda pair: pair[0])
+    deduped: List[str] = []
+    seen = set()
+    for _, phrase in ordered_phrases:
+        key = phrase.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(phrase)
+    return deduped
+
+
+def _select_entity_chunks(entry: Dict[str, object], caption_index: int) -> Optional[Sequence[object]]:
+    raw = entry.get("caption_entities")
+    if isinstance(raw, list) and 0 <= caption_index < len(raw):
+        value = raw[caption_index]
+        if isinstance(value, list):
+            return value
+    return None
+
+
+def _normalise_chunk_mode(mode: str) -> str:
+    key = (mode or "fixed").strip().lower()
+    if key not in VALID_CHUNK_MODES:
+        raise ValueError(f"Unsupported chunk mode '{mode}'. Expected one of {VALID_CHUNK_MODES}.")
+    return key
+
+
 def _chunk_segments(
     caption: str,
     chunk_words: int,
     chunk_stride: int,
     chunk_threshold: int,
+    chunk_mode: str,
+    entity_chunks: Optional[Sequence[object]] = None,
 ) -> List[str]:
+    if chunk_mode == "entity" and entity_chunks:
+        normalised = _normalise_entity_chunk_list(entity_chunks)
+        if normalised:
+            return normalised
+
     words = caption.split()
     if chunk_words <= 0 or len(words) < chunk_threshold:
         return [caption]
@@ -181,6 +244,7 @@ def _encode_chunked_embeddings(
     chunk_words: int,
     chunk_stride: int,
     chunk_threshold: int,
+    chunk_mode: str,
     text_pooling: str,
     image_embed_cache: Optional[np.ndarray] = None,
 ) -> Dict[str, object]:
@@ -205,12 +269,15 @@ def _encode_chunked_embeddings(
     segments: List[str] = []
     for image_idx, item in enumerate(dataset):
         captions = cast(List[str], item["captions"])
-        for caption in captions:
+        for caption_index, caption in enumerate(captions):
+            entity_chunks = _select_entity_chunks(item, caption_index)
             chunked = _chunk_segments(
                 caption,
                 chunk_words=chunk_words,
                 chunk_stride=chunk_stride,
                 chunk_threshold=chunk_threshold,
+                chunk_mode=chunk_mode,
+                entity_chunks=entity_chunks,
             )
             start = len(segments)
             segments.extend(chunked)
@@ -292,6 +359,7 @@ def _train_adapter(
     chunk_words: int,
     chunk_stride: int,
     chunk_threshold: int,
+    chunk_mode: str,
     text_pooling: str,
     fine_grained_weight: float,
     distill_weight: float,
@@ -356,11 +424,14 @@ def _train_adapter(
             with Image.open(entry["image_path"]).convert("RGB") as img:
                 images.append(preprocess(img))
 
+            entity_chunks = _select_entity_chunks(entry, cap_pos)
             chunked = _chunk_segments(
                 selected_caption,
                 chunk_words=chunk_words,
                 chunk_stride=chunk_stride,
                 chunk_threshold=chunk_threshold,
+                chunk_mode=chunk_mode,
+                entity_chunks=entity_chunks,
             )
             start = len(caption_segments)
             caption_segments.extend(chunked)
@@ -439,6 +510,8 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
     """Execute the Visual Genome adapter experiment and return metrics."""
     set_all_seeds(config.seed)
     device = select_torch_device(config.device_preference)
+    chunk_mode = _normalise_chunk_mode(config.chunk_mode)
+    chunking_enabled = chunk_mode != "fixed" or config.chunk_words > 0
 
     datasets = _load_visual_genome_dataset(
         paths,
@@ -480,7 +553,7 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
         baseline_embeddings[split] = emb
         baseline_metrics[split] = metrics
 
-    if config.chunk_words > 0:
+    if chunking_enabled:
         for split in config.run_splits:
             dataset = datasets[split]
             cache = chunk_image_cache.get(split) if config.cache_chunk_image_embeds else None
@@ -494,6 +567,7 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
                 chunk_words=config.chunk_words,
                 chunk_stride=config.chunk_stride,
                 chunk_threshold=config.chunk_threshold,
+                chunk_mode=chunk_mode,
                 text_pooling=config.text_pooling,
                 image_embed_cache=cache,
             )
@@ -509,7 +583,7 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
     teacher_caps, teacher_img2cap = (None, None)
     if config.distill_weights and any(weight > 0 for weight in config.distill_weights):
         teacher_caps, teacher_img2cap = _prepare_teacher_cache(
-            chunk_embeddings if config.chunk_words > 0 else baseline_embeddings,
+            chunk_embeddings if chunking_enabled else baseline_embeddings,
             split="train",
             cache_on_cpu=config.teacher_cache_on_cpu,
         )
@@ -531,6 +605,7 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
             chunk_words=config.chunk_words,
             chunk_stride=config.chunk_stride,
             chunk_threshold=config.chunk_threshold,
+            chunk_mode=chunk_mode,
             text_pooling=config.text_pooling,
             fine_grained_weight=config.fine_grained_weight,
             distill_weight=weight,
@@ -547,7 +622,7 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
         current_metrics: Dict[str, Dict[str, Dict[int, float]]] = {}
         for split in config.run_splits:
             cache = chunk_image_cache.get(split) if config.cache_chunk_image_embeds else None
-            if config.chunk_words > 0:
+            if chunking_enabled:
                 emb = _encode_chunked_embeddings(
                     dataset=datasets[split],
                     preprocess=preprocess,
@@ -558,6 +633,7 @@ def run_visual_genome_adapter(paths: RuntimePaths, config: AdapterExperimentConf
                     chunk_words=config.chunk_words,
                     chunk_stride=config.chunk_stride,
                     chunk_threshold=config.chunk_threshold,
+                    chunk_mode=chunk_mode,
                     text_pooling=config.text_pooling,
                     image_embed_cache=cache,
                 )

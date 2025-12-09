@@ -40,6 +40,11 @@ final/
 Main pipeline: use `notebooks/vg_adapter_colab.ipynb` or `notebooks/tmp.py` on Colab for a guided run (all parameters reside in a single configuration block).
 
 ---
+### Chunking modes
+
+`scripts/run_vg_adapter.py` exposes `--chunk-mode` so experiments can switch between the legacy fixed-size sliding window (`fixed`) and entity-driven segmentation (`entity`). The latter consumes optional `caption_entities` metadata (e.g., Flickr30k Entities phrase lists) and falls back to the fixed strategy whenever entity spans are unavailable.
+
+---
 Data sources
 - Flickr30k images: apply for access at `https://shannon.cs.illinois.edu/DenotationGraph/`.
 - Flickr30k Entities annotations and splits: `https://github.com/BryanPlummer/flickr30k_entities`.

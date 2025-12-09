@@ -6,7 +6,7 @@
 # Parameter block (edit these before running anything else)
 CONFIG = {
     "repo_url": "https://github.com/wppqywq/CLIP_text_encoder.git",  # GitHub repo to clone
-    "repo_branch": "main",
+    "repo_branch": "shawn-dev",
     "repo_dir": "/content/comp545_final_github",
     "drive_mount": "/content/drive",
     "data_root": "/content/drive/MyDrive/comp545_data",
@@ -33,6 +33,7 @@ CONFIG = {
     "chunk_words": 8,
     "chunk_stride": 4,
     "chunk_threshold": 15,
+    "chunk_mode": "entity",
     "text_pooling": "attn",
     "show_progress": True,
 }
@@ -247,6 +248,7 @@ def run_experiment(limit, distill_weights: Iterable[float], output_name: str):
         chunk_words=CONFIG["chunk_words"],
         chunk_stride=CONFIG["chunk_stride"],
         chunk_threshold=CONFIG["chunk_threshold"],
+        chunk_mode=CONFIG["chunk_mode"],
         text_pooling=CONFIG["text_pooling"],
         device_preference=CONFIG.get("device", "cuda"),
         show_progress=CONFIG.get("show_progress", True),
@@ -470,6 +472,7 @@ try:
         chunk_words=CONFIG["chunk_words"],
         chunk_stride=CONFIG["chunk_stride"],
         chunk_threshold=CONFIG["chunk_threshold"],
+        chunk_mode=CONFIG["chunk_mode"],
         text_pooling=CONFIG["text_pooling"],
         image_embed_cache=None,
     )
@@ -542,9 +545,11 @@ except Exception as e:
 
 # %%
 # close chunking
+original_chunk_mode = CONFIG.get("chunk_mode", "fixed")
 CONFIG.update({
     "chunk_words": 0,
     "chunk_threshold": 0,
+    "chunk_mode": "fixed",
     "smoke_distill": (0.0,),
 })
 
@@ -565,6 +570,8 @@ summarize_best_metrics(smoke_nc_summary.loc[smoke_nc_summary["split"] == "test"]
 plot_loss_logs(smoke_nc_results, title="Smoke Test Adapter Dynamics (no-chunk)")
 if CONFIG["smoke_distill"]:
     show_test_metrics(smoke_nc_results, CONFIG["smoke_distill"][-1])
+
+CONFIG["chunk_mode"] = original_chunk_mode
 
 # %% [markdown]
 # ## 4. Full Experiment

@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-words", type=int, default=BASE_CONFIG.chunk_words, help="Chunk size; set 0 to disable.")
     parser.add_argument("--chunk-stride", type=int, default=BASE_CONFIG.chunk_stride, help="Chunk stride.")
     parser.add_argument("--chunk-threshold", type=int, default=BASE_CONFIG.chunk_threshold, help="Minimum words before chunking.")
+    parser.add_argument("--chunk-mode", default=BASE_CONFIG.chunk_mode, choices=("fixed", "entity"), help="Chunk segmentation mode.")
     parser.add_argument("--text-pooling", default=BASE_CONFIG.text_pooling, help="Chunk pooling mode (mean/max/attn).")
 
     parser.add_argument("--adapter-steps", type=int, default=BASE_CONFIG.adapter_steps, help="Adapter training steps.")
@@ -77,6 +78,7 @@ def main() -> None:
         chunk_words=args.chunk_words,
         chunk_stride=args.chunk_stride,
         chunk_threshold=args.chunk_threshold,
+        chunk_mode=args.chunk_mode,
         text_pooling=args.text_pooling,
         adapter_steps=args.adapter_steps,
         adapter_batch=args.adapter_batch,
