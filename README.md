@@ -55,9 +55,9 @@ final/
 
 ---
 ### Data sources
-- Flickr30k images: apply for access at `https://shannon.cs.illinois.edu/DenotationGraph/`.
-- Flickr30k Entities annotations and splits: `https://github.com/BryanPlummer/flickr30k_entities`.
-- Visual Genome: `https://homes.cs.washington.edu/~ranjay/visualgenome/api.html`
+- Flickr30k images: apply for access at [DenotationGraph](https://shannon.cs.illinois.edu/DenotationGraph/).
+- Flickr30k Entities annotations and splits: [BryanPlummer/flickr30k_entities](https://github.com/BryanPlummer/flickr30k_entities).
+- [Visual Genome api](https://homes.cs.washington.edu/~ranjay/visualgenome/api.html).
 
 
 
