@@ -1,12 +1,21 @@
 # CLIP encoder NLU (COMP 545 final)
 
-This repo contains code for our COMP 545 final project on fine-grained retrieval with CLIP-style encoders.
+This repo contains code for our COMP 545 final project on fine-grained retrieval with CLIP-style encoders. Some of experiments were run in Google Colab, and the corresponding results and hyperparameters are also stored in this repository.
 
 - Dataset: `Flickr30k Entities`: phrase-to-box annotations on Flickr30k, used for initial experiments and qualitative examples. (legacy)
 - Dataset: `Visual Genome`: region-level descriptions paired with images; we process a 5k-image subset and use it as the main benchmark for adapter experiments.
 
 - Model: `ViT-B-32` from OpenCLIP.
 - Weights: `laion2b_s34b_b79k`.
+
+---
+### Install deps
+
+Python 3.10+ with:
+```
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121  # or cpu/mps per env
+pip install open_clip_torch pillow numpy matplotlib pandas
+```
 
 ---
 ### File tree
@@ -37,7 +46,7 @@ final/
   - `VG_COLAB_OUTPUT_ROOT` – where metrics and logs are written (defaults to `Drive/.../output`)
 
 ---
-Main pipeline: use `notebooks/vg_adapter_colab.ipynb` or `notebooks/tmp.py` on Colab for a guided run (all parameters reside in a single configuration block).
+**Main pipeline**: use `notebooks/vg_adapter_colab.ipynb` or `notebooks/tmp.py` on Colab for a guided run (all parameters reside in a single configuration block).
 
 ---
 ### Chunking modes
@@ -45,19 +54,11 @@ Main pipeline: use `notebooks/vg_adapter_colab.ipynb` or `notebooks/tmp.py` on C
 `scripts/run_vg_adapter.py` exposes `--chunk-mode` so experiments can switch between the legacy fixed-size sliding window (`fixed`) and entity-driven segmentation (`entity`). The latter consumes optional `caption_entities` metadata (e.g., Flickr30k Entities phrase lists) and falls back to the fixed strategy whenever entity spans are unavailable.
 
 ---
-Data sources
+### Data sources
 - Flickr30k images: apply for access at `https://shannon.cs.illinois.edu/DenotationGraph/`.
 - Flickr30k Entities annotations and splits: `https://github.com/BryanPlummer/flickr30k_entities`.
 - Visual Genome: `https://homes.cs.washington.edu/~ranjay/visualgenome/api.html`
 
----
-Install deps
-
-Python 3.10+ with:
-```
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121  # or cpu/mps per env
-pip install open_clip_torch pillow numpy matplotlib pandas
-```
 
 
 
